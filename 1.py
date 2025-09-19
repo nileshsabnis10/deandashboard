@@ -1,8 +1,8 @@
-# Dean Dashboard — UI v4.3.0 (Read-Only, main-screen filters, no Health tab)
-# Built: 19 Sep 2025, 01:25 PM IST
+# Dean Dashboard — UI v4.3.1 (Read-Only, main-screen filters, no Health tab)
+# Built: 19 Sep 2025, 01:43 PM IST
 # Notes:
+#   • Added Global Cutoff display to Class View.
 #   • Final Correct Logic: 3-state status is now determined by checking for data in component-specific sheets.
-#   • This version correctly identifies Locked, Draft Saved, and Not Started statuses.
 
 import os, json, re, io, time
 from typing import Dict, List, Tuple
@@ -16,8 +16,8 @@ from google.auth.transport.requests import AuthorizedSession
 # ==============================
 # Constants / Meta
 # ==============================
-DASHBOARD_VERSION = "4.3.0"
-LAST_BUILD_STR = "19 Sep 2025, 01:25 PM IST"
+DASHBOARD_VERSION = "4.3.1"
+LAST_BUILD_STR = "19 Sep 2025, 01:43 PM IST"
 
 # ==============================
 # Read-only configuration (unchanged logic)
@@ -181,6 +181,21 @@ def get_class_cutoff_display(ssid: str) -> str:
     appset = load_tab(ssid, "_AppSettings")
     if appset.empty or "Key" not in appset.columns or "Value" not in appset.columns: return ""
     v = appset.loc[appset["Key"]=="LockCutoffISO", "Value"]
+    if v.empty: return ""
+    raw = v.iloc[0].strip()
+    try:
+        dt = datetime.fromisoformat(raw.replace("Z","+00:00"))
+        ist = timezone(timedelta(hours=5, minutes=30))
+        if dt.tzinfo: dt = dt.astimezone(ist)
+        else: dt = dt.replace(tzinfo=ist)
+        return dt.strftime("%d/%m/%Y %H:%M IST")
+    except Exception:
+        return raw
+
+def get_global_cutoff_display(ssid: str) -> str:
+    g_settings = load_tab(ssid, "_GlobalSettings")
+    if g_settings.empty or "Key" not in g_settings.columns or "Value" not in g_settings.columns: return ""
+    v = g_settings.loc[g_settings["Key"]=="GlobalLockCutoffISO", "Value"]
     if v.empty: return ""
     raw = v.iloc[0].strip()
     try:
@@ -424,14 +439,15 @@ elif nav == "Class View":
         audit = load_tab(ssid, "_Audit")
         
         locked, total, _ = all_components_locked_for_class(cfg, audit, klass)
-        c1,c2,c3 = st.columns(3)
+        c1, c2, c3, c4 = st.columns(4)
         c1.metric("Components Locked", f"{locked} / {total}")
         c2.metric("Final Approval", "✅ Approved" if is_class_final_approved(ssid, klass) else "⏳ Pending")
-        c3.metric("Lock Cutoff", get_class_cutoff_display(ssid) or "—")
+        c3.metric("Class Cutoff", get_class_cutoff_display(ssid) or "—")
+        c4.metric("Global Cutoff", get_global_cutoff_display(ssid) or "—")
+        
         st.progress(min(100, int((locked/total*100.0) if total else 0)))
 
         st.subheader("Per-Course Component Status")
-        # Pass the ssid to the function so it can check data sheets
         tbl = per_course_lock_table(ssid, cfg, audit, klass)
         if tbl.empty:
             st.info("No _Config found for this class.")
