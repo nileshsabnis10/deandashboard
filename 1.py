@@ -1,4 +1,3 @@
-
 # Dean Dashboard — UI v4.1.1 (Read-Only, main-screen filters, no Health tab)
 # Built: 19 Sep 2025, 07:20 AM IST
 # Notes:
@@ -182,7 +181,8 @@ def all_components_locked_for_class(cfg: pd.DataFrame, audit: pd.DataFrame, klas
 
 def get_class_cutoff_display(ssid: str) -> str:
     appset = load_tab(ssid, "_AppSettings")
-    if appset.empty or "Key" not in appset.columns: return ""
+    # --- FIX APPLIED HERE ---
+    if appset.empty or "Key" not in appset.columns or "Value" not in appset.columns: return ""
     v = appset.loc[appset["Key"]=="LockCutoffISO", "Value"]
     if v.empty: return ""
     raw = v.iloc[0].strip()
