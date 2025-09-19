@@ -196,7 +196,7 @@ st.set_page_config(page_title="Dean's Dashboard — Read Only", layout="wide", p
 st.markdown("""<style>.topbar{height:6px;background:linear-gradient(90deg,#e11d48,#f59e0b,#22c55e,#3b82f6);border-radius:8px;margin-bottom:10px;}.kpi{border-radius:14px;padding:16px;border:1px solid rgba(0,0,0,0.06);box-shadow:0 2px 6px rgba(0,0,0,.04);background:#fff;}</style><div class="topbar"></div>""", unsafe_allow_html=True)
 
 title_col, meta_col = st.columns([3,1])
-with title_col: st.title("📊 Dean's Progress Dashboard"); st.caption("Read-only visibility into internal marks submission and approvals.")
+with title_col: st.title("📊 Progress Dashboard"); st.caption("Read-only visibility into internal marks submission and approvals.")
 with meta_col: st.metric("Version", DASHBOARD_VERSION); st.caption(f"Last Build: {LAST_BUILD_STR}")
 
 nav = st.radio("View", ["Overview", "Class View"], horizontal=True)
