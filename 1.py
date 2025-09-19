@@ -1,10 +1,8 @@
-# Dean Dashboard — UI v4.1.1 (Read-Only, main-screen filters, no Health tab)
-# Built: 19 Sep 2025, 07:20 AM IST
+# Dean Dashboard — UI v4.3.0 (Read-Only, main-screen filters, no Health tab)
+# Built: 19 Sep 2025, 01:25 PM IST
 # Notes:
-#   • Logic unchanged from working versions (read-only; robust final/provisional detection; wide A1:ZZZ reads)
-#   • Navigation + filters on the MAIN screen (no sidebar)
-#   • Download buttons for both Excel and CSV (Approved & Provisional)
-#   • Health option removed
+#   • Final Correct Logic: 3-state status is now determined by checking for data in component-specific sheets.
+#   • This version correctly identifies Locked, Draft Saved, and Not Started statuses.
 
 import os, json, re, io, time
 from typing import Dict, List, Tuple
@@ -18,8 +16,8 @@ from google.auth.transport.requests import AuthorizedSession
 # ==============================
 # Constants / Meta
 # ==============================
-DASHBOARD_VERSION = "4.1.1"
-LAST_BUILD_STR = "19 Sep 2025, 07:20 AM IST"
+DASHBOARD_VERSION = "4.3.0"
+LAST_BUILD_STR = "19 Sep 2025, 01:25 PM IST"
 
 # ==============================
 # Read-only configuration (unchanged logic)
@@ -100,7 +98,7 @@ def list_class_spreadsheets(class_folder_id: str) -> List[Dict]:
 # Sheets helpers (READ) — unchanged logic
 # ==============================
 def _df_from_values(values: List[List[str]]) -> pd.DataFrame:
-    if not values: return pd.DataFrame()
+    if not values or len(values) <= 1: return pd.DataFrame() # Return empty if no data rows
     cols = values[0] if values else []
     rows = values[1:] if len(values) > 1 else []
     try:
@@ -114,7 +112,7 @@ def _df_from_values(values: List[List[str]]) -> pd.DataFrame:
 @st.cache_data(ttl=600, show_spinner=False)
 def load_tab(ssid: str, title: str) -> pd.DataFrame:
     url = f"https://sheets.googleapis.com/v4/spreadsheets/{ssid}/values:batchGet"
-    params = {"ranges": [f"'{title}'!A1:ZZZ"], "majorDimension": "ROWS"}  # wide range
+    params = {"ranges": [f"'{title}'!A1:ZZZ"], "majorDimension": "ROWS"}
     r = SESSION.get(url, params=params, timeout=60)
     if r.status_code in (400,404): return pd.DataFrame()
     r.raise_for_status()
@@ -136,7 +134,7 @@ def get_sheet_id_map(ssid: str) -> Dict[str,int]:
     return out
 
 # ==============================
-# Domain logic — unchanged (robust final detection, approvals, progress)
+# Domain logic
 # ==============================
 def is_class_final_approved(ssid: str, klass: str) -> bool:
     ap = load_tab(ssid, "_Approvals")
@@ -181,7 +179,6 @@ def all_components_locked_for_class(cfg: pd.DataFrame, audit: pd.DataFrame, klas
 
 def get_class_cutoff_display(ssid: str) -> str:
     appset = load_tab(ssid, "_AppSettings")
-    # --- FIX APPLIED HERE ---
     if appset.empty or "Key" not in appset.columns or "Value" not in appset.columns: return ""
     v = appset.loc[appset["Key"]=="LockCutoffISO", "Value"]
     if v.empty: return ""
@@ -195,21 +192,50 @@ def get_class_cutoff_display(ssid: str) -> str:
     except Exception:
         return raw
 
-def per_course_lock_table(cfg: pd.DataFrame, audit: pd.DataFrame, klass: str) -> pd.DataFrame:
+def per_course_lock_table(ssid: str, cfg: pd.DataFrame, audit: pd.DataFrame, klass: str) -> pd.DataFrame:
     if cfg.empty: return pd.DataFrame()
     c = cfg[cfg["_class_lower"] == str(klass).lower()].copy()
     if c.empty: return pd.DataFrame()
+
+    # --- Process Audit Log for 'Locked' status ---
     a = audit.copy()
-    for col in ["Class","Course","Component","Action"]:
+    for col in ["Class", "Course", "Component", "Action"]:
         if col not in a.columns: a[col] = ""
-    a["Locked"] = a["Action"].astype(str).str.lower().eq("locked")
+    a = a[a["Class"].astype(str).str.strip().str.lower() == str(klass).lower().strip()]
     a["key"] = a["Course"].astype(str).str.lower().str.strip() + "||" + a["Component"].astype(str).str.lower().str.strip()
+    locked_keys = set(a[a["Action"].astype(str).str.lower() == "locked"]["key"])
+
     c["key"] = c["_code_lower"] + "||" + c["_comp_lower"]
-    c["IsLocked"] = c["key"].isin(set(a[a["Locked"]]["key"]))
-    view = c[["CourseCode","Course","Component","IsLocked"]].drop_duplicates().copy()
-    view = view.sort_values(by=["CourseCode","Component"])
-    view["Status"] = view["IsLocked"].map({True:"🔒 Locked", False:"🔓 Unlocked"})
-    return view[["CourseCode","Course","Component","Status"]]
+    
+    # --- Generate Status for each component ---
+    statuses = []
+    for index, row in c.iterrows():
+        key = row["key"]
+        if key in locked_keys:
+            statuses.append("🔒 Locked")
+            continue
+        
+        # If not locked, check for a data sheet with content
+        course_code = row["CourseCode"]
+        component = row["Component"]
+        # Construct the expected sheet name, e.g., "USTES101__T1"
+        data_sheet_name = f"{course_code}__{component}"
+        
+        # The load_tab function is cached and returns an empty df if the sheet is empty/not found
+        data_df = load_tab(ssid, data_sheet_name)
+        
+        if not data_df.empty:
+            statuses.append("📝 Draft Saved")
+        else:
+            statuses.append("⚫ Not Started")
+            
+    c["Status"] = statuses
+    
+    # Prepare the final view
+    view = c[["CourseCode", "Course", "Component", "Status"]].drop_duplicates().copy()
+    view = view.sort_values(by=["CourseCode", "Component"])
+    
+    return view
 
 # --- Robust Final/Provisional detection (unchanged logic) ---
 def _norm(s: str) -> str:
@@ -218,12 +244,8 @@ def _norm(s: str) -> str:
 def _klass_variants(klass: str) -> List[str]:
     k = str(klass).strip()
     v = {
-        k,
-        k.replace("/", "-"),
-        k.replace("/", "_"),
-        k.replace(" ", "-"),
-        k.replace(" ", "_"),
-        k.replace(" ", ""),
+        k, k.replace("/", "-"), k.replace("/", "_"),
+        k.replace(" ", "-"), k.replace(" ", "_"), k.replace(" ", ""),
     }
     return list(v)
 
@@ -340,7 +362,6 @@ if nav == "Overview":
     else:
         rows = []
         for k in selected_classes:
-            # Resolve sheet id (logic unchanged)
             class_folders = list_child_folders(dept_id_map[dept])
             kf = next((f for f in class_folders if f["name"].strip().lower()==k.strip().lower()), None)
             if not kf:
@@ -401,6 +422,7 @@ elif nav == "Class View":
         st.markdown(f"**Workbook:** `{ssname}`")
         cfg = _prep_cfg(load_tab(ssid, "_Config"))
         audit = load_tab(ssid, "_Audit")
+        
         locked, total, _ = all_components_locked_for_class(cfg, audit, klass)
         c1,c2,c3 = st.columns(3)
         c1.metric("Components Locked", f"{locked} / {total}")
@@ -409,7 +431,8 @@ elif nav == "Class View":
         st.progress(min(100, int((locked/total*100.0) if total else 0)))
 
         st.subheader("Per-Course Component Status")
-        tbl = per_course_lock_table(cfg, audit, klass)
+        # Pass the ssid to the function so it can check data sheets
+        tbl = per_course_lock_table(ssid, cfg, audit, klass)
         if tbl.empty:
             st.info("No _Config found for this class.")
         else:
