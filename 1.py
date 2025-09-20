@@ -1,8 +1,8 @@
-# Dean Dashboard — UI v4.3.1 (Read-Only, main-screen filters, no Health tab)
-# Built: 19 Sep 2025, 01:43 PM IST
+# Dean Dashboard — UI v4.4.0 (Read-Only, main-screen filters, no Health tab)
+# Built: 20 Sep 2025, 07:14 AM IST
 # Notes:
-#   • Added Global Cutoff display to Class View.
-#   • Final Correct Logic: 3-state status is now determined by checking for data in component-specific sheets.
+#   • Removed Class and Global cutoff displays from the Class View for a cleaner layout.
+#   • Retains 3-state status logic (Locked, Draft Saved, Not Started).
 
 import os, json, re, io, time
 from typing import Dict, List, Tuple
@@ -16,11 +16,11 @@ from google.auth.transport.requests import AuthorizedSession
 # ==============================
 # Constants / Meta
 # ==============================
-DASHBOARD_VERSION = "4.3.1"
-LAST_BUILD_STR = "19 Sep 2025, 01:43 PM IST"
+DASHBOARD_VERSION = "4.4.0"
+LAST_BUILD_STR = "20 Sep 2025, 07:14 AM IST"
 
 # ==============================
-# Read-only configuration (unchanged logic)
+# Read-only configuration
 # ==============================
 SCOPES = [
     "https://www.googleapis.com/auth/drive.readonly",
@@ -54,7 +54,7 @@ PARENT_FOLDER_ID = SET["PARENT_FOLDER_ID"]
 STANDARD_CLASSES = SET["STANDARD_CLASSES"]
 
 # ==============================
-# Auth (READ ONLY) — unchanged logic
+# Auth (READ ONLY)
 # ==============================
 def _creds_from_path_or_json(path_or_json: str):
     if os.path.exists(path_or_json):
@@ -69,17 +69,11 @@ CREDS = _creds_from_path_or_json(SET["READ_SA_FILE"])
 SESSION = AuthorizedSession(CREDS)
 
 # ==============================
-# Drive helpers (READ) — unchanged logic
+# Drive helpers (READ)
 # ==============================
 def drive_list(q: str, fields: str = "files(id,name,mimeType,parents)") -> List[Dict]:
     url = "https://www.googleapis.com/drive/v3/files"
-    params = {
-        "q": q,
-        "fields": fields,
-        "pageSize": 1000,
-        "supportsAllDrives": "true",
-        "includeItemsFromAllDrives": "true",
-    }
+    params = { "q": q, "fields": fields, "pageSize": 1000, "supportsAllDrives": "true", "includeItemsFromAllDrives": "true" }
     r = SESSION.get(url, params=params, timeout=60); r.raise_for_status()
     return r.json().get("files", [])
 
@@ -88,25 +82,21 @@ def list_child_folders(parent_id: str) -> List[Dict]:
     return sorted(drive_list(q, "files(id,name)"), key=lambda f: f["name"].lower())
 
 def list_class_spreadsheets(class_folder_id: str) -> List[Dict]:
-    q = (
-        f"'{class_folder_id}' in parents and "
-        "mimeType='application/vnd.google-apps.spreadsheet' and trashed=false"
-    )
+    q = (f"'{class_folder_id}' in parents and mimeType='application/vnd.google-apps.spreadsheet' and trashed=false")
     return drive_list(q, "files(id,name)")
 
 # ==============================
-# Sheets helpers (READ) — unchanged logic
+# Sheets helpers (READ)
 # ==============================
 def _df_from_values(values: List[List[str]]) -> pd.DataFrame:
-    if not values or len(values) <= 1: return pd.DataFrame() # Return empty if no data rows
+    if not values or len(values) <= 1: return pd.DataFrame()
     cols = values[0] if values else []
     rows = values[1:] if len(values) > 1 else []
     try:
         df = pd.DataFrame(rows, columns=cols)
     except Exception:
         df = pd.DataFrame(rows)
-        if cols:
-            df.columns = cols[:df.shape[1]]
+        if cols: df.columns = cols[:df.shape[1]]
     return df
 
 @st.cache_data(ttl=600, show_spinner=False)
@@ -121,11 +111,7 @@ def load_tab(ssid: str, title: str) -> pd.DataFrame:
 
 @st.cache_data(ttl=600, show_spinner=False)
 def get_sheet_id_map(ssid: str) -> Dict[str,int]:
-    r = SESSION.get(
-        f"https://sheets.googleapis.com/v4/spreadsheets/{ssid}",
-        params={"fields": "sheets(properties(sheetId,title))"},
-        timeout=60,
-    )
+    r = SESSION.get(f"https://sheets.googleapis.com/v4/spreadsheets/{ssid}", params={"fields": "sheets(properties(sheetId,title))"}, timeout=60)
     r.raise_for_status()
     out={}
     for s in r.json().get("sheets", []):
@@ -143,15 +129,11 @@ def is_class_final_approved(ssid: str, klass: str) -> bool:
         rows = ap.iloc[1:] if list(ap.columns)[0] == "Scope" else ap
     except Exception:
         rows = ap
-    mask = (
-        (rows.iloc[:,0].astype(str).str.strip()=="ClassFinal") &
-        (rows.iloc[:,1].astype(str).str.strip()==klass)
-    )
+    mask = ((rows.iloc[:,0].astype(str).str.strip()=="ClassFinal") & (rows.iloc[:,1].astype(str).str.strip()==klass))
     return bool(mask.any())
 
 def _prep_cfg(cfg: pd.DataFrame) -> pd.DataFrame:
-    if cfg.empty:
-        return pd.DataFrame(columns=["Class","Course","CourseCode","Component","MaxMarks","_class_lower","_code_lower","_comp_lower"])
+    if cfg.empty: return pd.DataFrame(columns=["Class","Course","CourseCode","Component","MaxMarks","_class_lower","_code_lower","_comp_lower"])
     c = cfg.copy()
     for col in ["Class","CourseCode","Component"]:
         if col not in c.columns: c[col] = ""
@@ -169,50 +151,16 @@ def all_components_locked_for_class(cfg: pd.DataFrame, audit: pd.DataFrame, klas
     au = audit.copy()
     for col in ["Class","Course","Component","Action"]:
         if col not in au.columns: au[col] = ""
-    au["key"] = (
-        au["Course"].astype(str).str.lower().str.strip()
-        + "||" + au["Component"].astype(str).str.lower().str.strip()
-    )
+    au["key"] = (au["Course"].astype(str).str.lower().str.strip() + "||" + au["Component"].astype(str).str.lower().str.strip())
     c["key"] = c["_code_lower"] + "||" + c["_comp_lower"]
     locked = c["key"].isin(set(au[au["Action"].astype(str).str.lower()=="locked"]["key"])).sum()
     return int(locked), int(total), bool(locked==total)
-
-def get_class_cutoff_display(ssid: str) -> str:
-    appset = load_tab(ssid, "_AppSettings")
-    if appset.empty or "Key" not in appset.columns or "Value" not in appset.columns: return ""
-    v = appset.loc[appset["Key"]=="LockCutoffISO", "Value"]
-    if v.empty: return ""
-    raw = v.iloc[0].strip()
-    try:
-        dt = datetime.fromisoformat(raw.replace("Z","+00:00"))
-        ist = timezone(timedelta(hours=5, minutes=30))
-        if dt.tzinfo: dt = dt.astimezone(ist)
-        else: dt = dt.replace(tzinfo=ist)
-        return dt.strftime("%d/%m/%Y %H:%M IST")
-    except Exception:
-        return raw
-
-def get_global_cutoff_display(ssid: str) -> str:
-    g_settings = load_tab(ssid, "_GlobalSettings")
-    if g_settings.empty or "Key" not in g_settings.columns or "Value" not in g_settings.columns: return ""
-    v = g_settings.loc[g_settings["Key"]=="GlobalLockCutoffISO", "Value"]
-    if v.empty: return ""
-    raw = v.iloc[0].strip()
-    try:
-        dt = datetime.fromisoformat(raw.replace("Z","+00:00"))
-        ist = timezone(timedelta(hours=5, minutes=30))
-        if dt.tzinfo: dt = dt.astimezone(ist)
-        else: dt = dt.replace(tzinfo=ist)
-        return dt.strftime("%d/%m/%Y %H:%M IST")
-    except Exception:
-        return raw
 
 def per_course_lock_table(ssid: str, cfg: pd.DataFrame, audit: pd.DataFrame, klass: str) -> pd.DataFrame:
     if cfg.empty: return pd.DataFrame()
     c = cfg[cfg["_class_lower"] == str(klass).lower()].copy()
     if c.empty: return pd.DataFrame()
 
-    # --- Process Audit Log for 'Locked' status ---
     a = audit.copy()
     for col in ["Class", "Course", "Component", "Action"]:
         if col not in a.columns: a[col] = ""
@@ -222,7 +170,6 @@ def per_course_lock_table(ssid: str, cfg: pd.DataFrame, audit: pd.DataFrame, kla
 
     c["key"] = c["_code_lower"] + "||" + c["_comp_lower"]
     
-    # --- Generate Status for each component ---
     statuses = []
     for index, row in c.iterrows():
         key = row["key"]
@@ -230,38 +177,25 @@ def per_course_lock_table(ssid: str, cfg: pd.DataFrame, audit: pd.DataFrame, kla
             statuses.append("🔒 Locked")
             continue
         
-        # If not locked, check for a data sheet with content
         course_code = row["CourseCode"]
         component = row["Component"]
-        # Construct the expected sheet name, e.g., "USTES101__T1"
         data_sheet_name = f"{course_code}__{component}"
-        
-        # The load_tab function is cached and returns an empty df if the sheet is empty/not found
         data_df = load_tab(ssid, data_sheet_name)
         
-        if not data_df.empty:
-            statuses.append("📝 Draft Saved")
-        else:
-            statuses.append("⚫ Not Started")
+        if not data_df.empty: statuses.append("📝 Draft Saved")
+        else: statuses.append("⚫ Not Started")
             
     c["Status"] = statuses
     
-    # Prepare the final view
     view = c[["CourseCode", "Course", "Component", "Status"]].drop_duplicates().copy()
     view = view.sort_values(by=["CourseCode", "Component"])
-    
     return view
 
 # --- Robust Final/Provisional detection (unchanged logic) ---
-def _norm(s: str) -> str:
-    return re.sub(r"[^a-z0-9]+", " ", str(s).lower()).strip()
-
+def _norm(s: str) -> str: return re.sub(r"[^a-z0-9]+", " ", str(s).lower()).strip()
 def _klass_variants(klass: str) -> List[str]:
     k = str(klass).strip()
-    v = {
-        k, k.replace("/", "-"), k.replace("/", "_"),
-        k.replace(" ", "-"), k.replace(" ", "_"), k.replace(" ", ""),
-    }
+    v = {k, k.replace("/", "-"), k.replace("/", "_"), k.replace(" ", "-"), k.replace(" ", "_"), k.replace(" ", ""),}
     return list(v)
 
 @st.cache_data(ttl=600, show_spinner=False)
@@ -274,7 +208,6 @@ def find_final_tabs(ssid: str, klass: str) -> Dict[str, str]:
     k_norm = _norm(klass)
     k_tokens = set(k_norm.split())
     variants = set(map(_norm, _klass_variants(klass)))
-
     prov_tokens = {"provisional", "preview", "draft", "prov"}
     exact_candidates = []
     for t in titles:
@@ -282,9 +215,7 @@ def find_final_tabs(ssid: str, klass: str) -> Dict[str, str]:
         if "final" in nt:
             if any(v in nt for v in variants) or k_tokens.issubset(set(nt.split())):
                 exact_candidates.append(t)
-
-    approved = ""
-    provisional = ""
+    approved, provisional = "", ""
     for t in exact_candidates:
         nt = norms[t]
         if any(tok in nt for tok in prov_tokens):
@@ -292,7 +223,6 @@ def find_final_tabs(ssid: str, klass: str) -> Dict[str, str]:
         else:
             if not approved: approved = t
         if approved and provisional: break
-
     if not approved or not provisional:
         for t in titles:
             nt = norms[t]
@@ -302,16 +232,12 @@ def find_final_tabs(ssid: str, klass: str) -> Dict[str, str]:
                 else:
                     if not approved: approved = t
             if approved and provisional: break
-
     if not approved:
         for lit in [f"{klass}__Final", f"{klass} Final", f"Final {klass}", f"Class Final - {klass}", f"{klass} - Class Final"]:
-            if lit in titles:
-                approved = lit; break
+            if lit in titles: approved = lit; break
     if not provisional:
         for lit in [f"{klass}__Final (Provisional)", f"{klass}__Final_Provisional", f"{klass} Final (Provisional)"]:
-            if lit in titles:
-                provisional = lit; break
-
+            if lit in titles: provisional = lit; break
     return {"approved": approved, "provisional": provisional}
 
 # --- Helpers for downloads (Excel + CSV) ---
@@ -337,15 +263,7 @@ def df_to_csv_bytes(df: pd.DataFrame) -> bytes:
 st.set_page_config(page_title="Dean's Dashboard — Read Only", layout="wide", page_icon="📊")
 
 # Top bar + Title
-st.markdown("""
-    <style>
-    .topbar {height: 6px; background: linear-gradient(90deg, #e11d48, #f59e0b, #22c55e, #3b82f6); border-radius: 8px; margin-bottom: 10px;}
-    .kpi {border-radius: 14px; padding: 16px; border: 1px solid rgba(0,0,0,0.06); box-shadow: 0 2px 6px rgba(0,0,0,.04); background: #fff;}
-    .muted {color: #6b7280; font-size: 12px;}
-    </style>
-    <div class="topbar"></div>
-""", unsafe_allow_html=True)
-
+st.markdown("""<style>.topbar {height: 6px; background: linear-gradient(90deg, #e11d48, #f59e0b, #22c55e, #3b82f6); border-radius: 8px; margin-bottom: 10px;}.kpi {border-radius: 14px; padding: 16px; border: 1px solid rgba(0,0,0,0.06); box-shadow: 0 2px 6px rgba(0,0,0,.04); background: #fff;}.muted {color: #6b7280; font-size: 12px;}</style><div class="topbar"></div>""", unsafe_allow_html=True)
 title_col, meta_col = st.columns([3,1])
 with title_col:
     st.title("📊 Progress Dashboard")
@@ -367,25 +285,20 @@ dept_id_map = {f["name"]: f["id"] for f in dept_folders}
 
 if nav == "Overview":
     colA, colB = st.columns([2,2])
-    with colA:
-        dept = st.selectbox("Program / Department", sorted(dept_names), index=0)
-    with colB:
-        selected_classes = st.multiselect("Classes", STANDARD_CLASSES, default=STANDARD_CLASSES)
+    with colA: dept = st.selectbox("Program / Department", sorted(dept_names), index=0)
+    with colB: selected_classes = st.multiselect("Classes", STANDARD_CLASSES, default=STANDARD_CLASSES)
 
-    if not selected_classes:
-        st.info("Select at least one class to summarize.")
+    if not selected_classes: st.info("Select at least one class to summarize.")
     else:
         rows = []
         for k in selected_classes:
             class_folders = list_child_folders(dept_id_map[dept])
             kf = next((f for f in class_folders if f["name"].strip().lower()==k.strip().lower()), None)
             if not kf:
-                rows.append({"Class": k, "Workbook": "—", "Locked/Total": "0/0", "% Complete": 0.0, "Final Approval":"—"})
-                continue
+                rows.append({"Class": k, "Workbook": "—", "Locked/Total": "0/0", "% Complete": 0.0, "Final Approval":"—"}); continue
             candidates = list_class_spreadsheets(kf["id"])
             if not candidates:
-                rows.append({"Class": k, "Workbook": "—", "Locked/Total": "0/0", "% Complete": 0.0, "Final Approval":"—"})
-                continue
+                rows.append({"Class": k, "Workbook": "—", "Locked/Total": "0/0", "% Complete": 0.0, "Final Approval":"—"}); continue
             prio = [x for x in candidates if x["name"].lower().endswith("_marks")]
             meta = prio[0] if prio else candidates[0]
             ssid, ssname = meta["id"], meta["name"]
@@ -409,25 +322,20 @@ if nav == "Overview":
         st.dataframe(df, use_container_width=True, height=320)
         try:
             st.bar_chart(df[["Class","% Complete"]].set_index("Class"))
-        except Exception:
-            st.caption("Chart unavailable for current data.")
+        except Exception: st.caption("Chart unavailable for current data.")
 
 elif nav == "Class View":
     colA, colB = st.columns([2,2])
-    with colA:
-        dept = st.selectbox("Program / Department", sorted(dept_names), index=0, key="cls_dept")
-    with colB:
-        klass = st.selectbox("Class", STANDARD_CLASSES, index=0, key="cls_class")
+    with colA: dept = st.selectbox("Program / Department", sorted(dept_names), index=0, key="cls_dept")
+    with colB: klass = st.selectbox("Class", STANDARD_CLASSES, index=0, key="cls_class")
 
     ssid, ssname = "", ""
     class_folders = list_child_folders(dept_id_map[dept])
     kf = next((f for f in class_folders if f["name"].strip().lower()==klass.strip().lower()), None)
-    if not kf:
-        st.info("Selected class folder not found under this department.")
+    if not kf: st.info("Selected class folder not found under this department.")
     else:
         candidates = list_class_spreadsheets(kf["id"])
-        if not candidates:
-            st.info("No spreadsheet in this class folder.")
+        if not candidates: st.info("No spreadsheet in this class folder.")
         else:
             prio = [x for x in candidates if x["name"].lower().endswith("_marks")]
             meta = prio[0] if prio else candidates[0]
@@ -439,79 +347,50 @@ elif nav == "Class View":
         audit = load_tab(ssid, "_Audit")
         
         locked, total, _ = all_components_locked_for_class(cfg, audit, klass)
-        c1, c2, c3, c4 = st.columns(4)
+        c1, c2 = st.columns(2)
         c1.metric("Components Locked", f"{locked} / {total}")
         c2.metric("Final Approval", "✅ Approved" if is_class_final_approved(ssid, klass) else "⏳ Pending")
-        c3.metric("Class Cutoff", get_class_cutoff_display(ssid) or "—")
-        c4.metric("Global Cutoff", get_global_cutoff_display(ssid) or "—")
         
         st.progress(min(100, int((locked/total*100.0) if total else 0)))
 
         st.subheader("Per-Course Component Status")
         tbl = per_course_lock_table(ssid, cfg, audit, klass)
-        if tbl.empty:
-            st.info("No _Config found for this class.")
-        else:
-            st.dataframe(tbl, use_container_width=True, height=420)
+        if tbl.empty: st.info("No _Config found for this class.")
+        else: st.dataframe(tbl, use_container_width=True, height=420)
 
         st.subheader("Class Final (Approved / Provisional)")
         ft = find_final_tabs(ssid, klass)
-        approved_title = ft.get("approved") or ""
-        provisional_title = ft.get("provisional") or ""
+        approved_title, provisional_title = ft.get("approved") or "", ft.get("provisional") or ""
 
-        # Approved block with Excel & CSV
         if approved_title:
             st.markdown(f"**Approved Final:** `{approved_title}`")
             final_df = load_tab(ssid, approved_title)
-            if final_df.empty:
-                st.caption(f"`{approved_title}` loaded but has no visible rows in A1:ZZZ.")
+            if final_df.empty: st.caption(f"`{approved_title}` loaded but has no visible rows in A1:ZZZ.")
             else:
                 st.dataframe(final_df, use_container_width=True, height=360)
                 try:
-                    xbytes = df_to_excel_bytes(final_df, sheet_name="Approved Final")
-                    cbytes = df_to_csv_bytes(final_df)
-                    fname_x = _slug(dept, klass, "Approved_Final") + ".xlsx"
-                    fname_c = _slug(dept, klass, "Approved_Final") + ".csv"
+                    xbytes, cbytes = df_to_excel_bytes(final_df, sheet_name="Approved Final"), df_to_csv_bytes(final_df)
+                    fname_x, fname_c = _slug(dept, klass, "Approved_Final")+".xlsx", _slug(dept, klass, "Approved_Final")+".csv"
                     d1, d2 = st.columns(2)
-                    with d1:
-                        st.download_button("⬇️ Excel (Approved)", data=xbytes, file_name=fname_x,
-                                           mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                                           key=f"x_approved_{ssid}_{klass}")
-                    with d2:
-                        st.download_button("⬇️ CSV (Approved)", data=cbytes, file_name=fname_c,
-                                           mime="text/csv",
-                                           key=f"c_approved_{ssid}_{klass}")
-                except Exception as e:
-                    st.caption(f"Could not prepare downloads: {e}")
-        else:
-            st.caption("Approved Final not found.")
+                    with d1: d1.download_button("⬇️ Excel (Approved)", data=xbytes, file_name=fname_x, mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key=f"x_approved_{ssid}_{klass}")
+                    with d2: d2.download_button("⬇️ CSV (Approved)", data=cbytes, file_name=fname_c, mime="text/csv", key=f"c_approved_{ssid}_{klass}")
+                except Exception as e: st.caption(f"Could not prepare downloads: {e}")
+        else: st.caption("Approved Final not found.")
 
-        # Provisional block with Excel & CSV
         if provisional_title:
             st.markdown(f"**Provisional Final:** `{provisional_title}`")
             prov_df = load_tab(ssid, provisional_title)
-            if prov_df.empty:
-                st.caption(f"`{provisional_title}` loaded but has no visible rows in A1:ZZZ.")
+            if prov_df.empty: st.caption(f"`{provisional_title}` loaded but has no visible rows in A1:ZZZ.")
             else:
                 st.dataframe(prov_df, use_container_width=True, height=360)
                 try:
-                    xbytes = df_to_excel_bytes(prov_df, sheet_name="Provisional Final")
-                    cbytes = df_to_csv_bytes(prov_df)
-                    fname_x = _slug(dept, klass, "Provisional_Final") + ".xlsx"
-                    fname_c = _slug(dept, klass, "Provisional_Final") + ".csv"
+                    xbytes, cbytes = df_to_excel_bytes(prov_df, sheet_name="Provisional Final"), df_to_csv_bytes(prov_df)
+                    fname_x, fname_c = _slug(dept, klass, "Provisional_Final")+".xlsx", _slug(dept, klass, "Provisional_Final")+".csv"
                     d1, d2 = st.columns(2)
-                    with d1:
-                        st.download_button("⬇️ Excel (Provisional)", data=xbytes, file_name=fname_x,
-                                           mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                                           key=f"x_provisional_{ssid}_{klass}")
-                    with d2:
-                        st.download_button("⬇️ CSV (Provisional)", data=cbytes, file_name=fname_c,
-                                           mime="text/csv",
-                                           key=f"c_provisional_{ssid}_{klass}")
-                except Exception as e:
-                    st.caption(f"Could not prepare downloads: {e}")
-        elif not approved_title:
-            st.caption("No Provisional Final found either.")
+                    with d1: d1.download_button("⬇️ Excel (Provisional)", data=xbytes, file_name=fname_x, mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key=f"x_provisional_{ssid}_{klass}")
+                    with d2: d2.download_button("⬇️ CSV (Provisional)", data=cbytes, file_name=fname_c, mime="text/csv", key=f"c_provisional_{ssid}_{klass}")
+                except Exception as e: st.caption(f"Could not prepare downloads: {e}")
+        elif not approved_title: st.caption("No Provisional Final found either.")
 
 # Footer
 st.markdown("---")
