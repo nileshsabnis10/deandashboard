@@ -1,8 +1,9 @@
-# Dean Dashboard — UI v4.4.0 (Read-Only, main-screen filters, no Health tab)
-# Built: 20 Sep 2025, 07:14 AM IST
+# Dean Dashboard — UI v5.0.0 (Final)
+# Built: 20 Sep 2025, 08:00 AM IST
 # Notes:
-#   • Removed Class and Global cutoff displays from the Class View for a cleaner layout.
-#   • Retains 3-state status logic (Locked, Draft Saved, Not Started).
+#   • Final version with all features and bug fixes implemented.
+#   • Faculty lookup now correctly uses only the Course Code, fixing the "N/A" issue.
+#   • Dashboard defaults to "Class View".
 
 import os, json, re, io, time
 from typing import Dict, List, Tuple
@@ -16,8 +17,8 @@ from google.auth.transport.requests import AuthorizedSession
 # ==============================
 # Constants / Meta
 # ==============================
-DASHBOARD_VERSION = "4.4.0"
-LAST_BUILD_STR = "20 Sep 2025, 07:14 AM IST"
+DASHBOARD_VERSION = "5.0.0"
+LAST_BUILD_STR = "20 Sep 2025, 08:00 AM IST"
 
 # ==============================
 # Read-only configuration
@@ -135,11 +136,11 @@ def is_class_final_approved(ssid: str, klass: str) -> bool:
 def _prep_cfg(cfg: pd.DataFrame) -> pd.DataFrame:
     if cfg.empty: return pd.DataFrame(columns=["Class","Course","CourseCode","Component","MaxMarks","_class_lower","_code_lower","_comp_lower"])
     c = cfg.copy()
-    for col in ["Class","CourseCode","Component"]:
+    for col in ["Class", "Course", "CourseCode", "Component"]:
         if col not in c.columns: c[col] = ""
     c["_class_lower"] = c["Class"].astype(str).str.strip().str.lower()
-    c["_code_lower"]  = c["CourseCode"].astype(str).str.strip().str.lower()
-    c["_comp_lower"]  = c["Component"].astype(str).str.strip().str.lower()
+    c["_code_lower"]  = c["CourseCode"].astype(str).str.replace(r'\.0$', '', regex=True).str.strip().str.lower()
+    c["_comp_lower"]  = c["Component"].astype(str).str.replace(r'\.0$', '', regex=True).str.strip().str.lower()
     return c
 
 def all_components_locked_for_class(cfg: pd.DataFrame, audit: pd.DataFrame, klass: str) -> Tuple[int,int,bool]:
@@ -156,7 +157,7 @@ def all_components_locked_for_class(cfg: pd.DataFrame, audit: pd.DataFrame, klas
     locked = c["key"].isin(set(au[au["Action"].astype(str).str.lower()=="locked"]["key"])).sum()
     return int(locked), int(total), bool(locked==total)
 
-def per_course_lock_table(ssid: str, cfg: pd.DataFrame, audit: pd.DataFrame, klass: str) -> pd.DataFrame:
+def per_course_lock_table(ssid: str, cfg: pd.DataFrame, audit: pd.DataFrame, assignments: pd.DataFrame, klass: str) -> pd.DataFrame:
     if cfg.empty: return pd.DataFrame()
     c = cfg[cfg["_class_lower"] == str(klass).lower()].copy()
     if c.empty: return pd.DataFrame()
@@ -168,26 +169,47 @@ def per_course_lock_table(ssid: str, cfg: pd.DataFrame, audit: pd.DataFrame, kla
     a["key"] = a["Course"].astype(str).str.lower().str.strip() + "||" + a["Component"].astype(str).str.lower().str.strip()
     locked_keys = set(a[a["Action"].astype(str).str.lower() == "locked"]["key"])
 
-    c["key"] = c["_code_lower"] + "||" + c["_comp_lower"]
+    asm = assignments.copy()
+    for col in ["CourseCode", "FacultyID"]:
+        if col not in asm.columns: asm[col] = ""
     
+    # Create a key from just the course code
+    asm["key"] = asm["CourseCode"].astype(str).str.replace(r'\.0$', '', regex=True).str.strip().str.lower()
+
+    def format_faculty_name(email_id):
+        s_email = str(email_id).strip()
+        if '@' not in s_email:
+            return "N/A"
+        name_part = s_email.split('@')[0]
+        return ' '.join([part.capitalize() for part in name_part.split('.')])
+    
+    asm["FacultyName"] = asm["FacultyID"].apply(format_faculty_name)
+    # Create a map of {course_code -> Faculty Name}
+    faculty_map = pd.Series(asm.FacultyName.values, index=asm.key).to_dict()
+
     statuses = []
+    faculties = []
     for index, row in c.iterrows():
-        key = row["key"]
-        if key in locked_keys:
+        # Status logic
+        lock_key = f"{row['_code_lower']}||{row['_comp_lower']}"
+        if lock_key in locked_keys:
             statuses.append("🔒 Locked")
-            continue
+        else:
+            course_code = row["CourseCode"]
+            component = row["Component"]
+            data_sheet_name = f"{course_code}__{component}"
+            data_df = load_tab(ssid, data_sheet_name)
+            if not data_df.empty: statuses.append("📝 Draft Saved")
+            else: statuses.append("⚫ Not Started")
         
-        course_code = row["CourseCode"]
-        component = row["Component"]
-        data_sheet_name = f"{course_code}__{component}"
-        data_df = load_tab(ssid, data_sheet_name)
-        
-        if not data_df.empty: statuses.append("📝 Draft Saved")
-        else: statuses.append("⚫ Not Started")
+        # Faculty lookup using only the course code
+        course_key = row["_code_lower"]
+        faculties.append(faculty_map.get(course_key, "N/A"))
             
     c["Status"] = statuses
+    c["Faculty"] = faculties
     
-    view = c[["CourseCode", "Course", "Component", "Status"]].drop_duplicates().copy()
+    view = c[["CourseCode", "Course", "Component", "Status", "Faculty"]].drop_duplicates().copy()
     view = view.sort_values(by=["CourseCode", "Component"])
     return view
 
@@ -273,7 +295,7 @@ with meta_col:
     st.caption(f"Last Build: {LAST_BUILD_STR}")
 
 # NAV on main screen (Health removed)
-nav = st.radio("View", ["Overview", "Class View"], horizontal=True)
+nav = st.radio("View", ["Class View", "Overview"], horizontal=True)
 
 # Common: department list
 dept_folders = list_child_folders(PARENT_FOLDER_ID)
@@ -345,6 +367,7 @@ elif nav == "Class View":
         st.markdown(f"**Workbook:** `{ssname}`")
         cfg = _prep_cfg(load_tab(ssid, "_Config"))
         audit = load_tab(ssid, "_Audit")
+        assignments = load_tab(ssid, "_Assignments")
         
         locked, total, _ = all_components_locked_for_class(cfg, audit, klass)
         c1, c2 = st.columns(2)
@@ -354,7 +377,7 @@ elif nav == "Class View":
         st.progress(min(100, int((locked/total*100.0) if total else 0)))
 
         st.subheader("Per-Course Component Status")
-        tbl = per_course_lock_table(ssid, cfg, audit, klass)
+        tbl = per_course_lock_table(ssid, cfg, audit, assignments, klass)
         if tbl.empty: st.info("No _Config found for this class.")
         else: st.dataframe(tbl, use_container_width=True, height=420)
 
